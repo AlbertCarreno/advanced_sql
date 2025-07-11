@@ -1,0 +1,328 @@
+---
+title: "Stats 167 Final Project"
+author: "Albert Carreno"
+date: "2025-06-13"
+output: pdf_document
+---
+**Question 1**
+```{sql, eval = FALSE}
+SELECT 
+  *,
+  SUM(amount) OVER (PARTITION BY product_id ORDER BY sale_date)
+                                                    AS running_total
+FROM sales;                                                     
+```
+Explanation:
+We can pretty easily compute running totals for each product over time by using a window function here. We use SUM() in the window function since we want totals, partition by product_id to ensure we compute separate running totals for each product, and finally ORDER BY sale date so the running total starts with the first sale of the product and ends with the most recent sale. We give our window function an alias for clarity and select all other columns with * (product_id, sale_date, and amount).
+
+**Question 2**
+```{sql, eval = FALSE}
+SELECT *
+FROM (
+  SELECT
+    p.id AS product_id,
+    p.name,
+    p.category,
+    SUM(oi.quantity * oi.price) AS total_revenue,
+    RANK() OVER (
+      PARTITION BY p.category
+      ORDER BY SUM(oi.quantity * oi.price) DESC
+    ) AS ranking
+  FROM order_items oi
+  JOIN products p
+    ON oi.product_id = p.id
+  GROUP BY p.id, p.name, p.category
+) AS ranked_products
+WHERE ranking <= 2;
+```
+Explanation: The first step to writing this query is joining the orders and order items tables we are provided. We assume that id and product_id are the same thing. Joining the tables allows us to calculate the total revenue for each product by selecting quantity * price in our query. Then we GROUP BY category, name and id to get the total revenue per product per category. Finally, we use a window function with RANK() that first partitions our products by category and then orders them by total revenue assigning rankings to each product within a category based on revenue.
+
+All that's left to do is wrap this query with our window function in a subquery so we can properly filter it with a WHERE clause. We do this because WHERE clauses are evaluated before window functions, so by creating a derived table with this subquery, we can simply filter for where rank is 1 or 2 in the outer query since the rankings column becomes just another column.
+
+**Question 3**
+```{sql, eval = FALSE}
+SELECT
+  customer_id
+FROM orders o
+JOIN order_items oi
+  ON o.id = oi.order_id
+GROUP BY customer_id
+HAVING COUNT(DISTINCT product_id) = 1;
+```
+Explanation: Like the previous question, the first step here is linking both tables so we can extract order information by customer. We join the orders and order items tables on id and order_id, again assuming they are the same thing. With the tables joined, we then GROUP BY customer_id so we are able to look at all the orders of one specific customer at a time. Finally, we add a HAVING clause indicating we only want to return rows where a customer's orders have only been linked to one singular product id because this means they have only ever ordered the same product. 
+
+**Question 4**
+```{sql, eval = FALSE}
+WITH time_diffs AS (
+  SELECT
+    runner_id,
+    race_number,
+    finish_time,
+    finish_time - LAG(finish_time) OVER (
+      PARTITION BY runner_id ORDER BY race_number
+      ) AS time_diff
+   FROM marathon_times
+  )
+  SELECT runner_id
+  FROM time_diffs
+  GROUP BY runner_id
+  HAVING COUNT(*) = COUNT(CASE WHEN time_diff < 0 
+                            OR time_diff IS NULL THEN 1 END);
+```
+Explanation: To find the finish time differences between each race for all runners, we first create a CTE or common table expression that creates a temporary table we can use to essentially just add a column to the existing marathon times table that tells us the difference between a runner's time from one race compared to the previous one. We do this by using a LAG() window function, ordering by race number so it starts with the first race for all runners, and then partitioning by runner id to calculate to calculate time differences for each specific runner rather going row by row.
+
+Then, with our CTE time_diffs, we simply SELECT and GROUP BY runner_id and filter where the total number of rows for a runner is equal to the number of rows where the time difference is negative(implying the time improved) plus the number of rows that are NULL(difference for the first race or runners that have only done one race won't have values).
+
+**Question 5**
+```{sql, eval = FALSE}
+WITH first_login_dates AS (
+  SELECT
+    user_id,
+    login_date,
+    MIN(login_date) OVER 
+      (PARTITION BY user_id) AS first_login
+  ),
+  retained_status AS (
+  SELECT
+    user_id,
+    MAX(CASE WHEN login_date = first_login + 1 THEN 1 ELSE 0 END)
+                                                              AS retained
+    FROM first_login_dates
+    GROUP BY user_id
+  )
+SELECT
+    ROUND(SUM(retained) * 100 / COUNT(*), 2) AS retention_rate
+FROM retained_status;
+```
+Explanation: We start off by getting the first login dates for every user and storing it as a temporary result with a CTE, first_login_dates. Essentially, we're just adding a third column to the original column that has the first login date for every user. Using this temporary result, we create another one, retained_status, that adds a fourth column to the table that essentially first groups by each user and then adds a 1 if any of their logins occurred exactly one day after their first login. We use the MAX() function here because this way we give each user two possible values: 0 if there are no logins after their first login date or 1 if there are. 
+
+Finally, to calculate the retention rate we can just use a standard SELECT statement and return one value that is the result of summing all the ones(retained users) in the retained column of the retained_status CTE and multiply by 100 and then divide by all the rows COUNT(*) in retained_status to get the rate we want.
+
+**Question 6**
+```{sql, eval = FALSE}
+SELECT 
+  DISTINCT 
+    LEAST(s.seat_number, s.seat_right) AS seat_x
+    GREATEST(s.seat_number, s.seat_right) AS seat_y
+FROM setmap s
+JOIN availability a
+  ON s.seat_number = a.seat_number AND a1.is_available = 1
+JOIN availability av
+  ON s.seat_right = av.seat_number AND a2.is_available = 1
+WHERE s.seat_right IS NOT NULL
+
+UNION
+
+SELECT 
+  DISTINCT 
+    LEAST(s.seat_number, s.seat_left) AS seat_x
+    GREATEST(s.seat_number, s.seat_left) AS seat_y
+FROM setmap s
+JOIN availability a
+  ON s.seat_number = a.seat_number AND a1.is_available = 1
+JOIN availability av
+  ON s.seat_left = av.seat_number AND a2.is_available = 1
+WHERE s.seat_left IS NOT NULL;
+```
+Explanation: To find all available seat pairs, we need to consider both cases: whether the right seat is available and whether the left seat is available. To do this we can write two separate queries and use UNION so both are evaluated, but any duplicate records resulting from this are eliminated from the final output. 
+
+The first query joins the seatmap table with the availability table on the condition that the seat number field in both tables is the same and that that seat number is available to begin with so we don't waste any time with seats that aren't available. Then, we join the availability table one more time with the seat on the right of the initial seat, specifying we only want to join on the instances where that seat is available. By doing this, we've accounted for the case where the right seat is open. Now for the left seat, we copy this query beneath it just changing seat_right to seat_left, add the UNION as mentioned before to connect the queries, and then SELECT the lowest and highest seat number from each seat pair for both queries to return two columns with each available seatwise pair.
+
+**Question 7**
+```{sql, eval = FALSE}
+WITH artist_streams AS (
+  SELECT 
+    ss.artist_name,
+    ai.genre,
+    SUM(ss.stream_count) AS total_streams
+  FROM spotify_streams ss
+  JOIN artist_info ai
+    ON ss.artist_name = ai.name
+  GROUP BY ss.artist_name, ai.genre
+)
+
+SELECT genre
+FROM artist_streams
+WHERE total_streams = (
+  SELECT MAX(total_streams) FROM artist_genres
+)
+ORDER BY genre;
+```
+Explanation: To solve this question, we first create a CTE artist_genres that will calculate the total streams for each artist and includes the genre of the artist as well. We use a GROUP BY clause to accomplish this and join the sptofiy streams and artist_info tables as well where we assume that artist_name and name are the same. 
+
+With this temporary result set, we then simply select the genre column and filter on rows where the total streams is the maximum value in artist_genres and use ORDER BY genre to get alphabetical order.
+
+**Question 8**
+```{sql, eval = FALSE}
+SELECT 
+  user_id,
+  COUNT(CASE WHEN promotion_type = 'Full Price' THEN 1 END)
+                                                AS full_price_items,
+  COUNT(CASE WHEN promotion_type = 'Sale' THEN 1 END)
+                                                AS sale_items,
+  COUNT(CASE WHEN promotion_type = 'Clearance' THEN 1 END)
+                                                AS clearance_items
+FROM nordstrom_purchase_items np
+JOIN nordstrom_items_labels ni
+  ON np.product_id = ni.id
+GROUP BY np.user_id;
+```
+Explanation: To get the count of each promotion type item purchased by user, we first need to join the two tables we are given: nordstrom_purchase_items and nordstrom_items_labels assuming product_id and id are the same. This gives us access to all the columns we'll need to extract the information we want. 
+
+Using the joined table, we then GROUP BY user_id to collapse the data by user and then SELECT three new custom columns: full_price_items, sale_items, and clearance_items. Each new column uses a CASE expression to look through the joined table for each user and then adds a 1 to the sale_items when it finds a user has purchased a product with promotion_type 'Sale', in the joined table, for instance, and it repeats this process for the other 2 promotion types and for each individual user.
+
+**Question 9**
+```{sql, eval = FALSE}
+WITH users AS (
+  SELECT 
+   business_id,
+   COUNT(DISTINCT user_id) AS unique_users
+  FROM yelp_reviews
+  WHERE YEAR(review_date) = 2025
+  GROUP BY business_id
+),
+rankings AS (
+  SELECT *,
+    RANK() OVER (ORDER BY unique_users DESC) AS ranking
+  FROM users
+)
+SELECT business_id
+FROM rankings
+WHERE ranking = 1;
+```
+Explanation: For this question, we first need a critical piece of information we can't directly extract in a standard SELECT statement: number of unique users by business. To get this, we use a CTE(users) that uses COUNT(), DISTINCT, groups by business_id, and filters out only reviews from the year 2025 using WHERE. 
+
+Afterwards, we rank each business by how many unique users they have with a second CTE(rankings) using the RANK() window function since it allows for ties and tell it to ORDER BY the unique users we calculated for each business in the first CTE. Finally, all that's left to do is use a SELECT statement to extract all business_id that were given the rank 1 in the rankings CTE.
+
+**Question 10**
+```{sql, eval = FALSE}
+WITH fresh_la AS (
+  SELECT 
+    p.id AS partner_id,
+    p.name AS partner,
+    o.amount,
+    o.order_timestamp,
+    c.name AS city
+  FROM ue_orders o
+  JOIN ue_cities c
+    ON o.city_id = c.id
+  JOIN ue_partners p
+    ON o.seller_id = p.id
+  WHERE city = 'Los Angeles' AND p.name LIKE '%fresh%'
+)
+SELECT
+  partner,
+  AVG(amount) AS avg_order_amount
+FROM fresh_la
+WHERE DATE(order_timestamp) >= DATE('now', '-90 days')
+  AND  DATE(order_timestamp) < DATE('now')
+GROUP BY partner
+ORDER BY avg_order_amount DESC;
+```
+Explanation: The first step to getting the output we want here is joining all three tables we are given. We assume city_id and id are the same in the ue_cities and ie_orders tables and that seller_id and id are the same in the ue_orders and ue_partners tables. Once we have the combined table, we can then filter on partners based in Los Angeles with the word "fresh" in their name using a WHERE clause and the LIKE operator. We then select all the columns we'll need from this result: partner_id, partner name, amount, order timestamp, and city and make the result a CTE named fresh_la. 
+
+Next, we use fresh_la to select the partner name and use the AVG() aggregate function to get average order amount. We filter on results from the last 90 days excluding today using a WHERE clause and the DATE() function. Finally, we GROUP BY partner so we only get one row per partner containing average order amount for each, and we order it in descending order with ORDER BY.
+
+**Question 11**
+```{sql, eval = FALSE}
+WITH monthly_data AS (
+  SELECT 
+    DATE_FORMAT(d.actual_delivery_time, '%Y-%m') AS month,
+    SUM(sales_amount) AS monthly_sales,
+  FROM ue_delivery_orders d
+  JOIN ue_orders_value o
+    ON d.delivery_id = o.delivery_id
+  WHERE d.actual_delivery_time IS NOT NULL
+    AND YEAR(d.actual_delivery_time) = 2024
+  GROUP BY month, d.business_id
+)
+SELECT
+  month,
+  ROUND(COUNT(CASE WHEN monthly_sales >= 150 THEN 1 END) * 
+                                         100/COUNT(*), 2) AS percentage_150
+  FROM monthly_data
+  GROUP BY month
+  ORDER BY month;
+```
+Explanation: To get the percentage of all businesses each month in 2024 that reached at least $150 in sales, we do the following: Using a CTE monthly_data, we extract the month and year from the actual delivery time using the DATE_FORMAT() function, filter on all cases where the delivery time is not NULL and the year is 2024, GROUP BY month and business id, and finally use aggregation with the SUM() function to return every business's sales for each month in 2024. 
+
+Then to get the percentage of businesses, we use a standard SELECT statement and using COUNT() and a CASE expression we add a column percentage_150 that adds 1 for every occurrence where a business reached $150 in sales then multiply it by 100 and divide by COUNT(*), or the number of total businesses. Lastly, we GROUP BY month to include one percentage for each month and ORDER BY so the output starts from January.
+
+**Question 12**
+```{sql, eval = FALSE}
+WITH flyer_data AS (
+ SELECT
+  user_id,
+  strftime(actual_arrival_time, ‘%Y’) AS year,
+ FROM delta_customers
+WHERE actual_arrival_time IS NOT NULL 
+  AND year IN (2023, 2024)
+ GROUP BY user_id, year
+), 
+flight_amounts AS (
+SELECT 
+  user_id,
+  COUNT(*) AS flights
+FROM flyer_data
+GROUP BY user_id, year
+), 
+flights_2023 AS (
+ SELECT 
+    user_id,
+ FROM flight_counts
+ WHERE year = 2023 AND flights >= 6
+)
+SELECT 
+  DISTINCT fa.user_id,
+FROM flights_2023 f1
+JOIN flight_amounts fa
+  ON f1.user_id = fa.user_id
+WHERE fa.year = 2024 AND fa.flights >= 6;
+```
+Explanation: To get the Delta customers who have taken at least 6 flights in both 2023 and 2024, we start by using a CTE flyer_data to extract the year from the arrival time similar to the previous question, but here we use the strftime() function. We filter with WHERE to only include the instances that have arrival time values and happened in 2023 or 2024. Lastly, we group by year and user_id to have each user's flight history for these 2 years.
+
+Next, we create a second CTE called flight_amounts to get the exact number of flights taken by each user in each of the two years. We do this by taking the flyer_data CTE, using COUNT(*) to represent the number of flights, and grouping by user_id and year. After that, we create one more CTE called flights_2023 that simply filters the flight_amounts CTE to only include cases where a user has taken 6 or more flights in 2023.
+
+Finally, to return only users with at least 6 flights in both years, we join the flight amounts and flights_2023 CTEs together and filter with WHERE to add the users who have taken at least 6 flights in 2024 to the 2023 users.
+
+**Question 13**
+```{sql, eval = FALSE}
+WITH tiers AS (
+  SELECT
+    t.customer_id,
+    s.store_brand,
+    SUM(t.sales) AS total_sales,
+    COUNT(DISTINCT t.transaction_id) AS total_transactions,
+    SUM(t.sales) / COUNT(DISTINCT t.transaction_id) AS avg_cart_size,
+    CASE
+      WHEN SUM(t.sales) / COUNT(DISTINCT t.transaction_id) > 50 THEN 'High'
+      WHEN SUM(t.sales) / COUNT(DISTINCT t.transaction_id) >= 25 
+                                                              THEN 'Medium'
+      ELSE 'Low'
+    END AS tier
+  FROM amzn_transactions t
+  JOIN amzn_stores s ON t.store_id = s.store_id
+  WHERE YEAR(t.transaction_date) = 2025
+  GROUP BY t.customer_id, s.store_brand
+)
+SELECT
+    store_brand,
+    tier,
+    COUNT(DISTINCT customer_id) AS num_customers,
+    SUM(total_transactions) AS total_transactions,
+    SUM(total_sales) AS total_sales,
+    ROUND(AVG(avg_cart_size), 2) AS avg_cart_size
+  FROM tiers
+  GROUP BY store_brand, tier; 
+```
+Explanation: For this question, we first create a CTE called tiers that aims to classify customers by their average cart size, filters on the year 2025, and groups by store brand. To do this, we first join the amzn_transactions and amzn_stores tables on the assumption the store_id is the same in both tables. We then use WHERE and the YEAR() function to only return 2025 rows, and GROUP BY customer id and store brand to only return one row per customer per store brand. 
+
+Lastly, to classify the customers we simply SELECT a new avg_cart_size column that divides sales by the number of unique transactions that we get using COUNT(DISTINCT) and then based on this result for each customer, we classify the customer into the low, medium, or high group. 
+
+Next, we use a SELECT statement that takes the tiers CTE and groups by store brand and tier. With this grouped data we then SELECT 4 additional new columns that will give us all the information we need: num_customers which is the total number of customers per store and tier, total_transactions, total_sales, and avg_cart_size. And with these column selected, we are able to output all the information we want.
+
+
+
+
+
+
